@@ -1,32 +1,8 @@
-﻿// This is an example showing how to use the .NET type model in Il2CppInspector
-// to re-construct .proto files for applications using protobuf-net
-
-// Copyright 2020 Katy Coe - http://www.djkaty.com - https://github.com/djkaty
-// https://github.com/djkaty/Il2CppProtoExtractor-FallGuys
-// https://github.com/djkaty/Il2CppInspector
-// http://www.djkaty.com/tag/il2cpp
-
-// This example uses "Fall Guys: Ultimate Knockout" as the target:
-// Steam package: https://steamdb.info/sub/369927/
-// Game version: 2020-08-04
-// GameAssembly.dll - CRC32: F448429A
-// global-metadata.dat - CRC32: 98DFE664
-
-// Il2CppInspector: https://github.com/djkaty/Il2CppInspector
-// protobuf-net: https://github.com/protobuf-net/protobuf-net
-
-// References: 
-// https://developers.google.com/protocol-buffers/docs/overview
-// https://code.google.com/archive/p/protobuf-net/wikis/GettingStarted.wiki
-// http://loyc.net/2013/protobuf-net-unofficial-manual.html#:~:text=Protobuf%2Dnet%20can%20serialize%20a,feature%20is%20disabled%20by%20default.
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Gee.External.Capstone;
-using Gee.External.Capstone.X86;
 using Il2CppInspector.Reflection;
 
 namespace FallGuysProtoDumper
@@ -34,17 +10,11 @@ namespace FallGuysProtoDumper
     class Program
     {
         // Set the path to your metadata and binary files here
-        public static string MetadataFile = @"F:\Source\Repos\Il2CppInspector\Il2CppTests\TestBinaries\FallGuys\global-metadata.dat";
-        public static string BinaryFile = @"F:\Source\Repos\Il2CppInspector\Il2CppTests\TestBinaries\FallGuys\GameAssembly.dll";
+        public static string MetadataFile = @"C:\Games\Star Trek Fleet Command\default\game\prime_Data\il2cpp_data\Metadata\global-metadata.dat";
+        public static string BinaryFile = @"C:\Games\Star Trek Fleet Command\default\game\GameAssembly.dll";
 
         // Set the path to your desired output here
-        public static string ProtoFile = @"fallguys.proto";
-
-        // Capstone disassembler API
-        private static CapstoneX86Disassembler asm = CapstoneX86Disassembler.CreateX86Disassembler(X86DisassembleMode.Bit64);
-
-        // Output proto file text
-        private static StringBuilder proto = new StringBuilder();
+        public static string ProtoFile = @"stfc.proto";
 
         // Define type map from .NET types to protobuf types
         // This is specifically how protobuf-net maps types and is not the same for all .NET protobuf libraries
@@ -64,151 +34,375 @@ namespace FallGuysProtoDumper
             ["System.String"] = "string",
             ["System.Byte[]"] = "bytes",
             ["System.Char"] = "uint32",
-            ["System.DateTime"] = "google.protobuf.Timestamp"
+            ["System.DateTime"] = "google.protobuf.Timestamp",
+            ["Google.Protobuf.WellKnownTypes.Timestamp"] = "google.protobuf.Timestamp",
+            ["Google.Protobuf.ByteString"] = "bytes",
         };
-
-        // Mapping of CAG virtual addresses to ProtoMember field number constructor arguments
-        private static Dictionary<ulong, int> vaFieldMapping;
 
         static void Main(string[] args) {
 
             // First we load the binary and metadata files into Il2CppInspector
             // There is only one image so we use [0] to select this image
             Console.WriteLine("Loading package...");
-            var package = Il2CppInspector.Il2CppInspector.LoadFromFile(BinaryFile, MetadataFile, silent: true)[0];
+            var package = Il2CppInspector.Il2CppInspector.LoadFromFile(BinaryFile, MetadataFile, silent: false)[0];
 
             // Now we create the .NET type model from the package
             // This creates a .NET Reflection-style interface we can query with Linq
             Console.WriteLine("Creating type model...");
             var model = new TypeModel(package);
 
-            // Configure disassembler
-            asm.EnableInstructionDetails = true;
-
             // All protobuf messages have this class attribute
-            var protoContract = model.GetType("ProtoBuf.ProtoContractAttribute");
+            var protoContract = model.GetType("Google.Protobuf.IMessage");
+            var dataEnum = model.GetType("Digit.Utilities.IDataEnum");
 
             // Get all the messages by searching for types with [ProtoContract]
-            var messages = model.TypesByDefinitionIndex.Where(t => t.CustomAttributes.Any(a => a.AttributeType == protoContract));
+            var messages = model.TypesByDefinitionIndex.Where(t => t.ImplementedInterfaces.Any(a => a == protoContract) && t.DeclaringType == null);
 
-            // All protobuf fields have this property attribute
-            var protoMember = model.GetType("ProtoBuf.ProtoMemberAttribute");
+            messages = messages.Where(m => m.Namespace.StartsWith("Google.Protobuf") == false);
 
-            // Get the address of the ProtoMemberAttribute constructor
-            var protoMemberCtor = (long) protoMember.DeclaredConstructors[0].VirtualAddress.Value.Start;
+            var dataEnums = model.TypesByDefinitionIndex.Where(t => t.ImplementedInterfaces.Any(a => a == dataEnum));
 
-            // Get all of the custom attributes generators for ProtoMember so we can determine field numbers
-            var atts = model.CustomAttributeGenerators[protoMember];
+            Directory.CreateDirectory("output");
 
-            // Create a mapping of CAG virtual addresses to field numbers by reading the disassembly code
-            vaFieldMapping = atts.Select(a => new {
-                VirtualAddress = a.VirtualAddress.Start,
-                FieldNumber    = getProtoMemberArgument(a, protoMemberCtor)
-            })
-            .ToDictionary(kv => kv.VirtualAddress, kv => kv.FieldNumber);
+            List<string> packages = new List<string>();
 
-            // Display mappings
-            foreach (var mapping in vaFieldMapping)
-                Console.WriteLine($"{mapping.Key.ToAddressString()} = {mapping.Value}");
+            Dictionary<TypeInfo, string> messageToPackage = new Dictionary<TypeInfo, string>();
 
-            // Keep a list of all the enums we need to output (HashSet ensures unique values - we only want each enum once!)
-            var enums = new HashSet<TypeInfo>();
+            //Dictionary<string, List<TypeInfo>> keyValuePairs = new Dictionary<string, List<TypeInfo>>();
+            //var messageGroups = messages.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length);
+            //foreach (var message in messageGroups)
+            //{
+            //    //
+            //}
 
-            // Let's iterate over all of the messages and find all of the fields
-            // This is any field or property with the [ProtoMember] attribute
-            foreach (var message in messages) {
-                var name   = message.CSharpName;
-                var fields = message.DeclaredFields.Where(f => f.CustomAttributes.Any(a => a.AttributeType == protoMember));
-                var props  = message.DeclaredProperties.Where(p => p.CustomAttributes.Any(a => a.AttributeType == protoMember));
-
-                proto.Append($"message {name} {{\n");
-
-                // Output C# fields
-                foreach (var field in fields) {
-                    var pmAtt = field.CustomAttributes.First(a => a.AttributeType == protoMember);
-                    outputField(field.Name, field.FieldType, pmAtt);
-
-                    if (field.FieldType.IsEnum)
-                        enums.Add(field.FieldType);
+            // Collect all messages and their corressponding package
+            foreach (var messageGroup in messages.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length))
+            {
+                var namespaceName = messageGroup.Key;
+                if (namespaceName.Length > 0)
+                {
+                    foreach (var message in messageGroup)
+                    {
+                        messageToPackage[message] = namespaceName;
+                    }
                 }
-
-                // Output C# properties
-                foreach (var prop in props) {
-                    var pmAtt = prop.CustomAttributes.First(a => a.AttributeType == protoMember);
-                    outputField(prop.Name, prop.PropertyType, pmAtt);
-
-                    if (prop.PropertyType.IsEnum)
-                        enums.Add(prop.PropertyType);
-                }
-
-                proto.Append("}\n\n");
             }
 
-            // Output enums
-            var enumText = new StringBuilder();
-
-            foreach (var e in enums) {
-                enumText.Append("enum " + e.Name + " {\n");
-                var namesAndValues = e.GetEnumNames().Zip(e.GetEnumValues().Cast<int>(), (n, v) => n + " = " + v);
-                foreach (var nv in namesAndValues)
-                    enumText.Append("  " + nv + ";\n");
-                enumText.Append("}\n\n");
+            foreach (var messageGroup in dataEnums.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length))
+            {
+                var namespaceName = messageGroup.Key;
+                if (namespaceName.Length > 0)
+                {
+                    foreach (var message in messageGroup)
+                    {
+                        messageToPackage[message] = namespaceName;
+                    }
+                }
             }
 
-            // Output messages
-            var banner = @"// Proto file reconstruction tutorial example
-// For educational purposes only
+
+            foreach (var messageGroup in messages.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length))
+            {
+                // Keep a list of all the enums we need to output (HashSet ensures unique values - we only want each enum once!)
+                var enums = new HashSet<TypeInfo>();
+
+                // Output proto file text
+                StringBuilder proto = new StringBuilder();
+
+                // Output messages
+                var banner = @"// For educational purposes only
 // https://github.com/djkaty/Il2CppProtoExtractor-FallGuys
 // https://github.com/djkaty/Il2CppInspector
 // http://www.djkaty.com/tag/il2cpp
 
 syntax=""proto3"";
+
+option optimize_for = LITE_RUNTIME;
+
+import ""google/protobuf/timestamp.proto"";
+
 ";
 
-            File.WriteAllText(ProtoFile, banner + enumText.ToString() + proto.ToString());
+                StringBuilder packageString = new StringBuilder();
+
+                var namespaceName = messageGroup.Key;
+                if (namespaceName.Length == 0)
+                {
+                    namespaceName = "stfc";
+                } 
+                else
+                {
+                    packages.Add(namespaceName);
+                    packageString.Append("package " + namespaceName + ";\n\n");
+                }
+
+                var requiredImports = new HashSet<string>();
+
+                foreach (var message in messageGroup) {
+                    PrintMessage(model, protoContract, enums, message, proto, messageToPackage, requiredImports);
+                }
+
+                // Output enums
+                var enumText = new StringBuilder();
+
+                foreach(var e in dataEnums.Where(e => e.Namespace == messageGroup.Key))
+                {
+                    PrintDataEnum(enumText, e);
+                }
+
+                foreach (var e in enums)
+                {
+                    PrintEnum(enumText, e);
+                }
+
+                foreach(var import in requiredImports)
+                {
+                    if (import != namespaceName)
+                        banner += "import \"" + import + ".proto\";\n";
+                }
+
+                File.WriteAllText("output/" + namespaceName + ".proto", banner + packageString.ToString() + enumText.ToString() + proto.ToString());
+            }
+
+        }
+
+        private static void PrintMessage(TypeModel model, TypeInfo protoContract, HashSet<TypeInfo> enums, TypeInfo message, StringBuilder proto, Dictionary<TypeInfo, string> messageToPackage, HashSet<String> requiredImports)
+        {
+            var props = message.DeclaredProperties.Where(p => message.DeclaredFields.Any(f => f.Name == p.Name + "FieldNumber")).Select(p =>
+            {
+                return (p, (int)message.DeclaredFields.First(f => f.Name == p.Name + "FieldNumber").DefaultValue);
+            });
+
+            var oneOf = message.DeclaredProperties.Where(p => p.PropertyType.CSharpName.EndsWith("OneofCase"));
+            props = props.Where(p =>
+            {
+                var prop = p.Item1;
+                var name = prop.Name;
+                return !oneOf.Any(o => o.PropertyType.GetEnumNames().Any(n => n == name));
+            });
+            
+            var name = message.CSharpName;
+            proto.Append($"message {name} {{\n");
+
+            var nestedTypes = message.DeclaredNestedTypes.Where(t => t.CSharpName == "Types").SelectMany(t => t.DeclaredNestedTypes);
+            nestedTypes = nestedTypes.Where(t => t.ImplementedInterfaces.Any(a => a == protoContract));
+
+            foreach (var nested in nestedTypes)
+            {
+                PrintMessage(model, protoContract, enums, nested, proto, messageToPackage, requiredImports);
+            }
+
+            var GetType = (object f) =>
+            {
+                if (f.GetType() == typeof(FieldInfo))
+                {
+                    return ((FieldInfo)f).FieldType;
+                }
+                else if (f.GetType() == typeof(PropertyInfo))
+                {
+                    return ((PropertyInfo)f).PropertyType;
+                }
+                return null;
+            };
+
+            foreach (var p in oneOf)
+            {
+                proto.Append($"oneof {p.Name[..^"Case".Length]} {{\n");
+                foreach (var propName in p.PropertyType.GetEnumNames())
+                {
+                    if (propName == "None")
+                        continue;
+
+                    var field = message.DeclaredFields.FirstOrDefault(f => f.Name == propName + "FieldNumber");
+                    if (field == null)
+                        continue;
+
+                    var prop = message.DeclaredProperties.Where(p => p.Name == propName);
+                    var propType = GetType(prop.First());
+                    var fieldNumber = (int)field.DefaultValue;
+                    outputField(model, char.ToLower(propName[0]) + propName.Substring(1), message, propType, fieldNumber, proto, messageToPackage, requiredImports, enums);
+                }
+                proto.Append("}\n\n");
+            }
+
+            //// Output C# properties
+            foreach (var (prop, _) in props)
+            {
+                var propType = GetType(prop);
+
+
+                if (propType.IsEnum)
+                {
+                    if (propType.DeclaringType != null)
+                    {
+                        PrintEnum(proto, propType);
+                    }
+                    else
+                    {
+                        enums.Add(propType);
+                    }
+                }
+            }
+
+            foreach (var (prop, fieldNumber) in props)
+            {
+                var propType = GetType(prop);
+                // MEGA HACK
+                propType = ResolveInterfaceType(model, propType);
+                var propName = prop.Name;
+                outputField(model, char.ToLower(propName[0]) + propName.Substring(1), message, propType, fieldNumber, proto, messageToPackage, requiredImports, enums);
+            }
+
+            proto.Append("}\n\n");
+        }
+
+        private static void PrintEnum(StringBuilder proto, TypeInfo prop)
+        {
+            proto.Append("enum " + prop.CSharpName + " {\n");
+            var namesAndValues = prop.GetEnumNames().Zip(prop.GetEnumValues().Cast<int>(), (n, v) =>
+            {
+                return (prop.CSharpName.ToUpper() + "_" + n.ToUpper(), v);
+            });
+
+            if (!namesAndValues.Any(kv => kv.Item2 == 0))
+            {
+                proto.Append("  " + prop.CSharpName.ToUpper() + "_NONE = 0" + ";\n");
+            }
+            else if (namesAndValues.First().Item2 != 0)
+            {
+                namesAndValues = namesAndValues.OrderBy(kv => (uint)kv.Item2);
+            }
+            foreach (var nv in namesAndValues)
+                proto.Append("  " + nv.Item1 + " = " + nv.Item2 + ";\n");
+            proto.Append("}\n\n");
+        }
+
+        private static void PrintDataEnum(StringBuilder proto, TypeInfo prop)
+        {
+            proto.Append("enum " + prop.CSharpName + " {\n");
+            var dataEnumValues = prop.DeclaredNestedTypes.Where(e => e.CSharpName == "Values").First();
+            var namesAndValues = dataEnumValues.DeclaredFields.Select(f =>
+            {
+                return (prop.CSharpName.ToUpper() + "_" + f.Name.ToUpper(), (int)f.DefaultValue);
+            });
+
+            if (!namesAndValues.Any(kv => kv.Item2 == 0))
+            {
+                proto.Append("  " + prop.CSharpName.ToUpper() + "_NONE = 0" + ";\n");
+            }
+            else if (namesAndValues.First().Item2 != 0)
+            {
+                namesAndValues = namesAndValues.OrderBy(kv => (uint)kv.Item2);
+            }
+            foreach (var nv in namesAndValues)
+                proto.Append("  " + nv.Item1 + " = " + nv.Item2 + ";\n");
+            proto.Append("}\n\n");
+        }
+
+        private static string getParentNameFull(TypeInfo type)
+        {
+            var declaringType = type;
+            var result = string.Empty;
+            while (declaringType != null)
+            {
+                if (declaringType.CSharpName != "Types")
+                {
+                    result += (result == string.Empty ? "" : ".") + declaringType.CSharpName;
+                }
+                declaringType = declaringType.DeclaringType;
+            }
+            return result;
+        }
+
+        private static string getCleanFullName(TypeInfo type, TypeInfo fieldDeclaringType)
+        {
+            if (type.DeclaringType != null && type.Namespace.StartsWith("System.") == false)
+            {
+                return type.CSharpName;
+            }
+            else
+            {
+                return type.FullName;
+            }
+        }
+
+        private static string getCleanName(TypeInfo type, TypeInfo fieldDeclaringType)
+        {
+            if (type.DeclaringType != null && type.Namespace.StartsWith("System.") == false)
+            {
+                if ((type.DeclaringType.CSharpName != "Types" && type.DeclaringType != fieldDeclaringType) 
+                    || (type.DeclaringType.CSharpName == "Types" && type.DeclaringType.DeclaringType != fieldDeclaringType))
+                {
+                    return getParentNameFull(type.DeclaringType) + "." + type.CSharpName;
+                }
+                return type.CSharpName;
+            }
+            else
+            {
+                return type.Name;
+            }
         }
 
         // Output a single field definition in a protobuf message
-        private static void outputField(string name, TypeInfo type, CustomAttributeData pmAtt) {
+        private static void outputField(TypeModel model, string name, TypeInfo message, TypeInfo type, int pmAtt, StringBuilder proto, Dictionary<TypeInfo, String> messageToPackage, HashSet<String> requiredImports, HashSet<TypeInfo> enums)
+        {
             // Handle arrays
             var isRepeated = type.IsArray;
+            var isNested = type.DeclaringType != null;
             var isOptional = false;
 
-            var typeFullName = isRepeated? type.ElementType.FullName : type.FullName ?? string.Empty;
-            var typeFriendlyName = isRepeated? type.ElementType.Name : type.Name;
+            var realType = isRepeated ? type.ElementType : type;
+            realType = ResolveInterfaceType(model, realType);
+
+            var typeFullName = getCleanFullName(realType, message) ?? string.Empty;
+            var typeFriendlyName = getCleanName(realType, message);
 
             // Handle one-dimensional collections like lists
             // We could also use type.Namespace == "System.Collections.Generic" && type.UnmangledBaseName == "List"
             // or typeBaseName == "System.Collections.Generic.List`1" but these are less flexible
-            if (type.ImplementedInterfaces.Any(i => i.FullName == "System.Collections.Generic.IList`1")) {
+            if (type.ImplementedInterfaces.Any(i => i.FullName == "System.Collections.Generic.IList`1"))
+            {
                 // Get the type of the IList by looking at its first generic argument
                 // Note this is a naive implementation which doesn't handle nesting of lists or arrays in lists etc.
 
-                typeFullName = type.GenericTypeArguments[0].FullName;
-                typeFriendlyName = type.GenericTypeArguments[0].Name;
+                if (type.GenericTypeArguments[0].IsEnum)
+                    enums.Add(ResolveInterfaceType(model, type.GenericTypeArguments[0]));
+                typeFullName = getCleanFullName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message);
+                typeFriendlyName = getCleanName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message);
                 isRepeated = true;
             }
 
             // Handle maps (IDictionary)
-            if (type.ImplementedInterfaces.Any(i => i.FullName == "System.Collections.Generic.IDictionary`2")) {
+            if (type.ImplementedInterfaces.Any(i => i.FullName == "System.Collections.Generic.IDictionary`2"))
+            {
 
                 // This time we have two generic arguments to deal with - the key and the value
-                var keyFullName = type.GenericTypeArguments[0].FullName;
-                var valueFullName = type.GenericTypeArguments[1].FullName;
+
+                if (type.GenericTypeArguments[0].IsEnum)
+                    enums.Add(ResolveInterfaceType(model, type.GenericTypeArguments[0]));
+
+                if (type.GenericTypeArguments[1].IsEnum)
+                    enums.Add(type.GenericTypeArguments[1]);
+
+                var keyFullName = getCleanFullName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message);
+                var valueFullName = getCleanFullName(ResolveInterfaceType(model, type.GenericTypeArguments[1]), message);
 
                 // We're going to have to deal with building this proto type name separately from the value types below
                 // We don't set isRepeated because it's implied by using a map type
                 protoTypes.TryGetValue(keyFullName, out var keyFriendlyName);
                 protoTypes.TryGetValue(valueFullName, out var valueFriendlyName);
-                typeFriendlyName = $"map<{keyFriendlyName ?? type.GenericTypeArguments[0].Name}, {valueFriendlyName ?? type.GenericTypeArguments[1].Name}>";
+                typeFriendlyName = $"map<{keyFriendlyName ?? getCleanName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message)}, {valueFriendlyName ?? getCleanName(ResolveInterfaceType(model, type.GenericTypeArguments[1]), message)}>";
             }
 
             // Handle nullable types
-            if (type.FullName == "System.Nullable`1") {
+            if (type.FullName == "System.Nullable`1")
+            {
                 // Once again we look at the first generic argument to get the real type
+                if (type.GenericTypeArguments[0].IsEnum)
+                    enums.Add(type.GenericTypeArguments[0]);
 
-                typeFullName = type.GenericTypeArguments[0].FullName;
-                typeFriendlyName = type.GenericTypeArguments[0].Name;
+                typeFullName = getCleanFullName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message);
+                typeFriendlyName = getCleanName(ResolveInterfaceType(model, type.GenericTypeArguments[0]), message);
                 isOptional = true;
             }
 
@@ -218,6 +412,17 @@ syntax=""proto3"";
 
             // Handle repeated fields
             var annotatedName = typeFriendlyName;
+
+            var mappingType = isRepeated ? type.GenericTypeArguments[0] : type;
+            if (messageToPackage.ContainsKey(mappingType))
+            {
+                if ((isRepeated ? type.GenericTypeArguments[0] : type).Namespace != message.Namespace)
+                {
+                    annotatedName = messageToPackage[mappingType] + "." + annotatedName;
+                    requiredImports.Add(messageToPackage[mappingType]);
+                }
+            }
+
             if (isRepeated)
                 annotatedName = "repeated " + annotatedName;
 
@@ -226,42 +431,26 @@ syntax=""proto3"";
                 annotatedName = "optional " + annotatedName;
 
             // Output field
-            proto.Append($"  {annotatedName} {name} = {vaFieldMapping[pmAtt.VirtualAddress.Start]};\n");
+            proto.Append($"  {annotatedName} {name} = {pmAtt};\n");
         }
 
-        // Scan the object code to find the first argument to ProtoMember for a given CAG
-        private static int getProtoMemberArgument(CustomAttributeData att, long protoMemberCtor) {
-
-            // Disassemble the CAG
-            var code = asm.Disassemble(att.GetMethodBody(), (long) att.VirtualAddress.Start);
-            var insIndex = -1;
-            var disp = 0;
-
-            // Step forwards through each instruction
-            while (++insIndex < code.Length && disp == 0) {
-                var ins = code[insIndex];
-
-                // Look for JMP and CALL instructions to the ProtoMember constructor
-                if ((ins.Id == X86InstructionId.X86_INS_JMP || ins.Id == X86InstructionId.X86_INS_CALL)
-                    && ins.Details.Operands[0].Immediate == protoMemberCtor) {
-
-                    // Now step backwards looking for the most recent LEA EDX instruction
-                    while (--insIndex >= 0 && disp == 0) {
-                        ins = code[insIndex];
-
-                        if (ins.Id == X86InstructionId.X86_INS_LEA &&
-                            ins.Details.ExplicitlyWrittenRegisters[0].Id == X86RegisterId.X86_REG_EDX) {
-
-                            // The instruction is LEA EDX, [R8 + disp]
-                            // We know that R8 is zero so the displacement is the field number
-                            disp = (int) ins.Details.Displacement;
-                        }
-                    }
-                    if (insIndex == -1)
-                        throw new InvalidOperationException("Unable to determine ProtoMember field number");
+        private static TypeInfo ResolveInterfaceType(TypeModel model, TypeInfo realType)
+        {
+            if (realType.IsAbstract || realType.IsInterface)
+            {
+                // Resolve interface
+                var typesImplementingInterface = model.Types.Where(typeinfo =>
+                {
+                    return typeinfo.ImplementedInterfaces.Contains(realType);
+                });
+                if (realType.CSharpName.StartsWith("I"))
+                {
+                    var propNameNoInterface = realType.CSharpName.Substring(1);
+                    realType = typesImplementingInterface.Where(t => t.CSharpName == propNameNoInterface).First();
                 }
             }
-            return disp;
+
+            return realType;
         }
     }
 }
