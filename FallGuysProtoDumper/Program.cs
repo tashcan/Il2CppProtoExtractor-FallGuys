@@ -68,13 +68,6 @@ namespace FallGuysProtoDumper
 
             Dictionary<TypeInfo, string> messageToPackage = new Dictionary<TypeInfo, string>();
 
-            //Dictionary<string, List<TypeInfo>> keyValuePairs = new Dictionary<string, List<TypeInfo>>();
-            //var messageGroups = messages.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length);
-            //foreach (var message in messageGroups)
-            //{
-            //    //
-            //}
-
             // Collect all messages and their corressponding package
             foreach (var messageGroup in messages.GroupBy(m => m.Namespace).OrderByDescending(g => g.Key.Length))
             {
@@ -110,11 +103,7 @@ namespace FallGuysProtoDumper
                 StringBuilder proto = new StringBuilder();
 
                 // Output messages
-                var banner = @"// For educational purposes only
-// https://github.com/djkaty/Il2CppProtoExtractor-FallGuys
-// https://github.com/djkaty/Il2CppInspector
-// http://www.djkaty.com/tag/il2cpp
-
+                var banner = @"
 syntax=""proto3"";
 
 option optimize_for = LITE_RUNTIME;
