@@ -2,19 +2,18 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using Il2CppInspector.Reflection;
 
-namespace FallGuysProtoDumper
+namespace UnityProtoDumper
 {
     class Program
     {
-        // Set the path to your metadata and binary files here
-        public static string MetadataFile = @"C:\Games\Star Trek Fleet Command\default\game\prime_Data\il2cpp_data\Metadata\global-metadata.dat";
-        public static string BinaryFile = @"C:\Games\Star Trek Fleet Command\default\game\GameAssembly.dll";
-
-        // Set the path to your desired output here
-        public static string ProtoFile = @"stfc.proto";
+        static void ShowHelp()
+        {
+            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory>");
+        }
 
         // Define type map from .NET types to protobuf types
         // This is specifically how protobuf-net maps types and is not the same for all .NET protobuf libraries
@@ -39,12 +38,91 @@ namespace FallGuysProtoDumper
             ["Google.Protobuf.ByteString"] = "bytes",
         };
 
+        [STAThread]
         static void Main(string[] args) {
+            string il2cppPath = null;
+            string metadataPath = null;
+            string outputDir = null;
+
+            if (args.Length == 1)
+            {
+                if (args[0] == "--help")
+                {
+                    ShowHelp();
+                    return;
+                }
+            }
+            if (args.Length > 3)
+            {
+                ShowHelp();
+                return;
+            }
+            if (args.Length > 1)
+            {
+                foreach (var arg in args)
+                {
+                    if (File.Exists(arg))
+                    {
+                        var file = File.ReadAllBytes(arg);
+                        if (BitConverter.ToUInt32(file, 0) == 0xFAB11BAF)
+                        {
+                            metadataPath = arg;
+                        }
+                        else
+                        {
+                            il2cppPath = arg;
+                        }
+                    }
+                    else if (Directory.Exists(arg))
+                    {
+                        outputDir = Path.GetFullPath(arg) + Path.DirectorySeparatorChar;
+                    }
+                }
+            }
+            outputDir ??= Path.Join(AppDomain.CurrentDomain.BaseDirectory, "proto-out");
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                if (il2cppPath == null)
+                {
+                    var ofd = new Microsoft.Win32.OpenFileDialog
+                    {
+                        Filter = "Il2Cpp binary file|*.*"
+                    };
+                    if (ofd.ShowDialog() ?? false)
+                    {
+                        il2cppPath = ofd.FileName;
+                        ofd.Filter = "global-metadata|global-metadata.dat";
+                        if (ofd.ShowDialog() ?? false)
+                        {
+
+                            metadataPath = ofd.FileName;
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+            }
+            if (il2cppPath == null)
+            {
+                ShowHelp();
+                return;
+            }
+            if (metadataPath == null)
+            {
+                Console.WriteLine($"ERROR: Metadata file not found or encrypted.");
+                return;
+            }
 
             // First we load the binary and metadata files into Il2CppInspector
             // There is only one image so we use [0] to select this image
             Console.WriteLine("Loading package...");
-            var package = Il2CppInspector.Il2CppInspector.LoadFromFile(BinaryFile, MetadataFile, silent: false)[0];
+            var package = Il2CppInspector.Il2CppInspector.LoadFromFile(il2cppPath, metadataPath, silent: false)[0];
 
             // Now we create the .NET type model from the package
             // This creates a .NET Reflection-style interface we can query with Linq
@@ -62,7 +140,7 @@ namespace FallGuysProtoDumper
 
             var dataEnums = model.TypesByDefinitionIndex.Where(t => t.ImplementedInterfaces.Any(a => a == dataEnum));
 
-            Directory.CreateDirectory("output");
+            Directory.CreateDirectory(outputDir);
 
             List<string> packages = new List<string>();
 
@@ -150,7 +228,7 @@ import ""google/protobuf/timestamp.proto"";
                         banner += "import \"" + import + ".proto\";\n";
                 }
 
-                File.WriteAllText("output/" + namespaceName + ".proto", banner + packageString.ToString() + enumText.ToString() + proto.ToString());
+                File.WriteAllText(outputDir + "/" + namespaceName + ".proto", banner + packageString.ToString() + enumText.ToString() + proto.ToString());
             }
 
         }

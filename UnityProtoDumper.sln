@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.30320.27
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FallGuysProtoDumper", "FallGuysProtoDumper\FallGuysProtoDumper.csproj", "{298BF527-1A0D-4319-9AF0-A51210368165}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "UnityProtoDumper", "UnityProtoDumper\UnityProtoDumper.csproj", "{298BF527-1A0D-4319-9AF0-A51210368165}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Il2CppInspector", "Il2CppInspector\Il2CppInspector.Common\Il2CppInspector.csproj", "{8BE014A6-7AAA-4502-9475-AEB1614FD9EC}"
 EndProject
